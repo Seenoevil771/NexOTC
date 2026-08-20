@@ -8,14 +8,16 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid
 } from 'recharts';
 import { QRCodeSVG } from 'qrcode.react';
+import toast from 'react-hot-toast';
 import { useMarkets, useBinanceStream } from '../hooks/useCrypto';
 import { formatPrice, formatCompact, formatPct, formatNum } from '../utils/format';
 import TokenIcon from '../components/common/TokenIcon';
 import { TOKENS } from '../data/tokens';
+import { useAuth } from '../contexts/AuthContext';
 
 const WS_STREAMS = ['btcusdt@ticker','ethusdt@ticker','bnbusdt@ticker','solusdt@ticker','xrpusdt@ticker','adausdt@ticker'];
 
-const HOLDINGS = [];
+const formatUSD = (value) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(Number(value || 0));
 
 const PORTFOLIO_HISTORY = Array.from({ length: 30 }, (_, i) => {
   const base = 185000;
@@ -54,11 +56,16 @@ const CustomTooltipPie = ({ active, payload }) => {
 };
 
 export default function Portfolio() {
+  const { user, updateUserData } = useAuth();
   const { data: markets } = useMarkets(30);
   const livePrices = useBinanceStream(WS_STREAMS);
+  const portfolioBalance = Number(user?.portfolioBalance ?? 0);
+  const otcBalance = Number(user?.otcBalance ?? 0);
   const [tab, setTab] = useState('holdings');
   const [sendOpen, setSendOpen] = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
+  const [buyOpen, setBuyOpen] = useState(false);
+  const [buyStep, setBuyStep] = useState('choice');
   const [sendStep, setSendStep] = useState('asset'); // asset → details → review → confirm
   const [sendAsset, setSendAsset] = useState(null);
   const [sendAddress, setSendAddress] = useState('');
@@ -67,6 +74,11 @@ export default function Portfolio() {
   const [sendSuccess, setSendSuccess] = useState(false);
   const [receiveAsset, setReceiveAsset] = useState('BTC');
   const [copied, setCopied] = useState(false);
+  const [transferAmount, setTransferAmount] = useState('');
+  const [transferError, setTransferError] = useState('');
+  const [buyAsset, setBuyAsset] = useState('BTC');
+  const [buyUsdAmount, setBuyUsdAmount] = useState('');
+  const [buyError, setBuyError] = useState('');
 
   const getPrice = (symbol) => {
     const key = symbol + 'USDT';
@@ -76,16 +88,16 @@ export default function Portfolio() {
     return coin?.current_price || 0;
   };
 
-  const holdings = useMemo(() => HOLDINGS.map(h => {
+  const holdings = useMemo(() => (user?.holdings ?? []).map(h => {
     const price = getPrice(h.symbol);
     const currentValue = price * h.amount;
-    const costBasis = h.avgBuy * h.amount;
+    const costBasis = (Number(h.avgBuy ?? 0) || 0) * h.amount;
     const pnl = currentValue - costBasis;
-    const pnlPct = (pnl / costBasis) * 100;
+    const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
     return { ...h, price, currentValue, costBasis, pnl, pnlPct };
-  }), [markets, livePrices]);
+  }), [user?.holdings, markets, livePrices]);
 
-  const totalValue = holdings.reduce((s, h) => s + h.currentValue, 0);
+  const totalValue = portfolioBalance + holdings.reduce((s, h) => s + h.currentValue, 0);
   const totalCost = holdings.reduce((s, h) => s + h.costBasis, 0);
   const totalPnl = totalValue - totalCost;
   const totalPnlPct = (totalPnl / totalCost) * 100;
@@ -106,26 +118,88 @@ export default function Portfolio() {
     setSendError('');
   };
 
+  const resetBuy = () => {
+    setBuyStep('choice');
+    setTransferAmount('');
+    setTransferError('');
+    setBuyAsset('BTC');
+    setBuyUsdAmount('');
+    setBuyError('');
+  };
+
   const getBalance = (symbol) => {
     const h = holdings.find(h => h.symbol === symbol);
     return h ? h.amount : 0;
   };
 
+  const upsertHolding = (symbol, amount, avgBuy) => {
+    const current = user?.holdings ?? [];
+    const next = [...current];
+    const idx = next.findIndex(h => h.symbol === symbol);
+    const parsedAmount = Number(amount || 0);
+    const parsedAvg = Number(avgBuy || 0);
+    if (idx === -1) {
+      next.push({ symbol, amount: parsedAmount, avgBuy: parsedAvg });
+      return next;
+    }
+    const target = next[idx];
+    const currentAmount = Number(target.amount || 0);
+    const updatedAmount = currentAmount + parsedAmount;
+    const updatedAvg = updatedAmount > 0 ? ((currentAmount * Number(target.avgBuy || 0)) + (parsedAmount * parsedAvg)) / updatedAmount : 0;
+    next[idx] = { ...target, amount: updatedAmount, avgBuy: updatedAvg };
+    return next.filter(h => Number(h.amount || 0) > 0);
+  };
+
   const [sendError, setSendError] = useState('');
 
   const handleSendConfirm = () => {
-    const balance = getBalance(sendAsset);
-    const fee = sendAsset === 'BTC' ? 0.0001 : sendAsset === 'ETH' ? 0.003 : sendAsset === 'SOL' ? 0.0005 : 0.001;
-    const totalNeeded = parseFloat(sendAmount || 0) + fee;
-    if (balance < totalNeeded) {
-      setSendError(`Insufficient balance. You have ${formatNum(balance, 6)} ${sendAsset} but need ${formatNum(totalNeeded, 6)} ${sendAsset} (including fee).`);
+    const blockedMessage = 'Send unavailable. This account is currently not authorized to initiate cryptocurrency transfers. Please contact Support to verify your account and restore transfer access.';
+    toast.error(blockedMessage);
+    setSendError(blockedMessage);
+    return;
+  };
+
+  const handleTransferConfirm = () => {
+    const amount = Number(transferAmount || 0);
+    if (amount <= 0) {
+      setTransferError('Amount must be greater than $0.');
       return;
     }
-    setSendSuccess(true);
-    setTimeout(() => {
-      setSendOpen(false);
-      setTimeout(resetSend, 300);
-    }, 2500);
+    if (amount > otcBalance) {
+      setTransferError('Amount cannot exceed your OTC Portfolio Balance.');
+      return;
+    }
+
+    const nextOtc = otcBalance - amount;
+    const nextPortfolio = portfolioBalance + amount;
+    updateUserData({ otcBalance: nextOtc, portfolioBalance: nextPortfolio });
+    toast.success(`Transferred $${amount.toLocaleString()} from OTC to portfolio`);
+    setBuyOpen(false);
+    setTimeout(resetBuy, 150);
+  };
+
+  const handleCryptoPurchase = () => {
+    const usdAmount = Number(buyUsdAmount || 0);
+    const price = getPrice(buyAsset);
+    if (!buyAsset) {
+      setBuyError('Select an asset to buy.');
+      return;
+    }
+    if (usdAmount <= 0) {
+      setBuyError('Amount must be greater than $0.');
+      return;
+    }
+    if (usdAmount > portfolioBalance) {
+      setBuyError('Insufficient Portfolio cash for this purchase.');
+      return;
+    }
+    const quantity = usdAmount / price;
+    const nextHoldings = upsertHolding(buyAsset, quantity, price);
+    const nextPortfolio = portfolioBalance - usdAmount;
+    updateUserData({ holdings: nextHoldings, portfolioBalance: nextPortfolio });
+    toast.success(`Bought ${formatNum(quantity, 6)} ${buyAsset} using portfolio cash`);
+    setBuyOpen(false);
+    setTimeout(resetBuy, 150);
   };
 
   const token = WALLET_ASSETS.find(a => a === sendAsset);
@@ -180,7 +254,8 @@ export default function Portfolio() {
           <Download size={16} />
           Receive
         </button>
-        <button className="flex items-center gap-2 px-5 py-3 rounded-xl font-semibold text-sm transition-all"
+        <button onClick={() => { resetBuy(); setBuyOpen(true); }}
+          className="flex items-center gap-2 px-5 py-3 rounded-xl font-semibold text-sm transition-all"
           style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.6)' }}>
           <Plus size={16} />
           Buy
@@ -538,6 +613,155 @@ export default function Portfolio() {
                   <Clock size={11} />
                   Estimated arrival: 5-30 minutes
                 </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* ===== BUY MODAL ===== */}
+      {buyOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(8px)' }}
+          onClick={(e) => { if (e.target === e.currentTarget) { setBuyOpen(false); setTimeout(resetBuy, 150); } }}>
+          <div className="w-full max-w-md rounded-2xl overflow-hidden"
+            style={{
+              background: 'rgba(8,18,38,0.98)',
+              backdropFilter: 'blur(24px)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              boxShadow: '0 30px 80px rgba(0,0,0,0.7)',
+            }}>
+            <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+              <div className="flex items-center gap-3">
+                {buyStep !== 'choice' && (
+                  <button onClick={() => setBuyStep('choice')} className="p-1 -ml-1 rounded-lg hover:bg-white/5">
+                    <ChevronRight size={16} className="rotate-180 text-white/40" />
+                  </button>
+                )}
+                <h3 className="font-semibold text-white text-base">Buy Assets</h3>
+              </div>
+              <button onClick={() => { setBuyOpen(false); setTimeout(resetBuy, 150); }} className="p-1.5 rounded-lg hover:bg-white/5">
+                <X size={16} className="text-white/40" />
+              </button>
+            </div>
+
+            {buyStep === 'choice' ? (
+              <div className="p-5 space-y-3">
+                <button onClick={() => setBuyStep('otc-form')}
+                  className="w-full text-left p-4 rounded-xl transition-all"
+                  style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div className="text-sm font-semibold text-white">Buy from OTC Portfolio Balance</div>
+                  <div className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.4)' }}>OTC Portfolio Balance: {formatUSD(otcBalance)}</div>
+                </button>
+                <button onClick={() => setBuyStep('crypto-form')}
+                  className="w-full text-left p-4 rounded-xl transition-all"
+                  style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div className="text-sm font-semibold text-white">Buy Crypto with Portfolio Cash</div>
+                  <div className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.4)' }}>Portfolio Cash: {formatUSD(portfolioBalance)}</div>
+                </button>
+              </div>
+            ) : buyStep === 'otc-form' ? (
+              <div className="p-5 space-y-4">
+                <div className="p-3 rounded-xl" style={{ background: 'rgba(59,130,246,0.05)', border: '1px solid rgba(59,130,246,0.15)' }}>
+                  <div className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>OTC Portfolio Balance</div>
+                  <div className="text-2xl font-bold font-num text-white mt-1">{formatUSD(otcBalance)}</div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium mb-1.5 block" style={{ color: 'rgba(255,255,255,0.5)' }}>Amount to Buy / Transfer</label>
+                  <div className="relative">
+                    <input className="input-glass w-full text-sm font-num pr-12" placeholder="0.00"
+                      value={transferAmount} onChange={e => { setTransferAmount(e.target.value); setTransferError(''); }} />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-white/40">USD</span>
+                  </div>
+                </div>
+                {transferError && (
+                  <div className="p-3 rounded-xl text-xs" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444' }}>
+                    {transferError}
+                  </div>
+                )}
+                <button onClick={() => {
+                  const amount = Number(transferAmount || 0);
+                  if (amount <= 0) {
+                    setTransferError('Amount must be greater than $0.');
+                    return;
+                  }
+                  if (amount > otcBalance) {
+                    setTransferError('Amount cannot exceed your OTC Portfolio Balance.');
+                    return;
+                  }
+                  setTransferError('');
+                  setBuyStep('otc-review');
+                }}
+                  className="w-full py-3 rounded-xl font-semibold text-sm"
+                  style={{ background: 'linear-gradient(135deg, #3b82f6, #6366f1)', color: 'white' }}>
+                  Review Transfer
+                </button>
+              </div>
+            ) : buyStep === 'otc-review' ? (
+              <div className="p-5 space-y-4">
+                <div className="p-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                  <div className="flex items-center justify-between text-sm py-2">
+                    <span style={{ color: 'rgba(255,255,255,0.45)' }}>OTC Portfolio Balance</span>
+                    <span className="font-num font-semibold text-white">{formatUSD(otcBalance)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm py-2">
+                    <span style={{ color: 'rgba(255,255,255,0.45)' }}>Amount to Buy / Transfer</span>
+                    <span className="font-num font-semibold text-white">{formatUSD(Number(transferAmount || 0))}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm py-2 border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+                    <span style={{ color: 'rgba(255,255,255,0.45)' }}>OTC Balance After</span>
+                    <span className="font-num font-semibold text-white">{formatUSD(otcBalance - Number(transferAmount || 0))}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm py-2">
+                    <span style={{ color: 'rgba(255,255,255,0.45)' }}>Portfolio Balance After</span>
+                    <span className="font-num font-semibold text-white">{formatUSD(portfolioBalance + Number(transferAmount || 0))}</span>
+                  </div>
+                </div>
+                <button onClick={handleTransferConfirm}
+                  className="w-full py-3 rounded-xl font-semibold text-sm"
+                  style={{ background: 'linear-gradient(135deg, #22c55e, #16a34a)', color: 'white' }}>
+                  Confirm Transfer
+                </button>
+              </div>
+            ) : buyStep === 'crypto-form' ? (
+              <div className="p-5 space-y-4">
+                <div className="p-3 rounded-xl" style={{ background: 'rgba(34,197,94,0.05)', border: '1px solid rgba(34,197,94,0.2)' }}>
+                  <div className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>Portfolio Cash Available</div>
+                  <div className="text-2xl font-bold font-num text-white mt-1">{formatUSD(portfolioBalance)}</div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium mb-1.5 block" style={{ color: 'rgba(255,255,255,0.5)' }}>Asset</label>
+                  <select className="input-glass w-full text-sm" value={buyAsset} onChange={e => setBuyAsset(e.target.value)}>
+                    {WALLET_ASSETS.map(sym => (
+                      <option key={sym} value={sym}>{sym}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-medium mb-1.5 block" style={{ color: 'rgba(255,255,255,0.5)' }}>USD amount to spend</label>
+                  <div className="relative">
+                    <input className="input-glass w-full text-sm font-num pr-12" placeholder="0.00" value={buyUsdAmount} onChange={e => { setBuyUsdAmount(e.target.value); setBuyError(''); }} />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-white/40">USD</span>
+                  </div>
+                </div>
+                {buyUsdAmount && (
+                  <div className="p-3 rounded-xl text-xs" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div className="flex items-center justify-between">
+                      <span style={{ color: 'rgba(255,255,255,0.45)' }}>Estimated {buyAsset} Received</span>
+                      <span className="font-num text-white font-semibold">{formatNum(Number(buyUsdAmount || 0) / getPrice(buyAsset), 6)}</span>
+                    </div>
+                  </div>
+                )}
+                {buyError && (
+                  <div className="p-3 rounded-xl text-xs" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444' }}>
+                    {buyError}
+                  </div>
+                )}
+                <button onClick={handleCryptoPurchase}
+                  className="w-full py-3 rounded-xl font-semibold text-sm"
+                  style={{ background: 'linear-gradient(135deg, #3b82f6, #6366f1)', color: 'white' }}>
+                  Confirm Purchase
+                </button>
               </div>
             ) : null}
           </div>

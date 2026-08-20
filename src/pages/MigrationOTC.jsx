@@ -1,51 +1,85 @@
 import { useState, useEffect } from 'react';
+import { useAuth } from '../contexts/AuthContext';
 import {
   Building2, Wallet, ArrowRight, CheckCircle2, RefreshCw,
   Download, Info,
   TrendingUp, ArrowDownUp, Landmark, Clock
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useMarkets, useBinanceStream } from '../hooks/useCrypto';
 
 const INVESTORS_BANK = { id: 'investors', name: 'Investors Bank', number: '•••• 4281', color: '#1A73E8' };
-
-const MIGRATION_KEY = 'nexotc_migration';
-
-const loadData = () => {
-  try {
-    const raw = localStorage.getItem(MIGRATION_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return null;
-};
+const PORTFOLIO_STREAMS = ['btcusdt@ticker','ethusdt@ticker','bnbusdt@ticker','solusdt@ticker','xrpusdt@ticker','adausdt@ticker'];
 
 export default function MigrationOTC() {
-  const init = loadData();
+  const { user, updateUserData } = useAuth();
+  const { data: markets } = useMarkets(30);
+  const livePrices = useBinanceStream(PORTFOLIO_STREAMS);
   const [amount, setAmount] = useState('');
   const [step, setStep] = useState('form');
   const [selectedMigrate, setSelectedMigrate] = useState(null);
-  const [otcBalance, setOtcBalance] = useState(init?.otcBalance ?? 0);
-  const [bankBalance, setBankBalance] = useState(init?.bankBalance ?? 18885000);
-  const [migrationHistory, setMigrationHistory] = useState(init?.migrationHistory ?? []);
+  const [otcBalance, setOtcBalance] = useState(() => user?.otcBalance ?? 0);
+  const [bankBalance, setBankBalance] = useState(() => user?.bankBalance ?? 18885000);
+  const [migrationHistory, setMigrationHistory] = useState(() => user?.migrationHistory ?? []);
+  const portfolioBalance = Number(user?.portfolioBalance ?? 0);
+
+  const getPrice = (symbol) => {
+    const key = `${symbol}USDT`;
+    const live = livePrices[key]?.price;
+    if (live) return live;
+    const coin = markets.find(m => m.symbol?.toUpperCase() === symbol);
+    return coin?.current_price || 0;
+  };
+
+  const portfolioCashBalance = Number(user?.portfolioBalance ?? 0);
+  const portfolioHoldingsValue = (user?.holdings ?? []).reduce((sum, holding) => {
+    const amount = Number(holding.amount || 0);
+    return sum + (amount * getPrice(holding.symbol));
+  }, 0);
+  const portfolioTotalValue = portfolioCashBalance + portfolioHoldingsValue;
 
   useEffect(() => {
-    localStorage.setItem(MIGRATION_KEY, JSON.stringify({ otcBalance, bankBalance, migrationHistory }));
-  }, [otcBalance, bankBalance, migrationHistory]);
+    if (user && user.email && typeof updateUserData === 'function') {
+      const payload = { otcBalance, bankBalance, migrationHistory, portfolioBalance: Number(user?.portfolioBalance ?? 0), holdings: user?.holdings ?? [] };
+      const storedUser = localStorage.getItem('nexotc_user');
+      let parsed = null;
+      try { parsed = storedUser ? JSON.parse(storedUser) : null; } catch {}
+      const histEqual = JSON.stringify(parsed?.migrationHistory ?? []) === JSON.stringify(migrationHistory);
+      const otcEqual = (parsed?.otcBalance ?? 0) === otcBalance;
+      const bankEqual = (parsed?.bankBalance ?? 18885000) === bankBalance;
+      const portfolioEqual = (parsed?.portfolioBalance ?? 0) === Number(user?.portfolioBalance ?? 0);
+      if (!otcEqual || !bankEqual || !histEqual || !portfolioEqual) {
+        updateUserData(payload);
+      }
+    }
+  }, [otcBalance, bankBalance, migrationHistory, user, updateUserData]);
 
-  // Sync across tabs
   useEffect(() => {
     const handler = (e) => {
-      if (e.key === MIGRATION_KEY && e.newValue) {
+      if (e.key === 'nexotc_user' || e.key === 'nexotc_users') {
         try {
-          const d = JSON.parse(e.newValue);
-          setOtcBalance(d.otcBalance ?? 0);
-          setBankBalance(d.bankBalance ?? 18885000);
-          setMigrationHistory(d.migrationHistory ?? []);
+          const storedUser = localStorage.getItem('nexotc_user');
+          if (storedUser) {
+            const parsed = JSON.parse(storedUser);
+            if ((parsed.otcBalance ?? 0) !== otcBalance) setOtcBalance(parsed.otcBalance ?? 0);
+            if ((parsed.bankBalance ?? 18885000) !== bankBalance) setBankBalance(parsed.bankBalance ?? 18885000);
+            if (JSON.stringify(parsed.migrationHistory ?? []) !== JSON.stringify(migrationHistory)) setMigrationHistory(parsed.migrationHistory ?? []);
+          }
         } catch {}
       }
     };
     window.addEventListener('storage', handler);
     return () => window.removeEventListener('storage', handler);
-  }, []);
+  }, [bankBalance, migrationHistory, otcBalance]);
+
+  // When auth user changes (login/logout), sync local state from user
+  useEffect(() => {
+    if (user) {
+      setOtcBalance(user.otcBalance ?? 0);
+      setBankBalance(user.bankBalance ?? 18885000);
+      setMigrationHistory(user.migrationHistory ?? []);
+    }
+  }, [user]);
 
   const migrateAmount = parseFloat(amount) || 0;
 
@@ -74,7 +108,8 @@ export default function MigrationOTC() {
   };
 
   const handleConfirm = async () => {
-    // Record in history
+    const nextOtcBalance = Number(otcBalance) + migrateAmount;
+    const nextBankBalance = Number(bankBalance) - totalDeduction;
     const entry = {
       id: Date.now(),
       amount: migrateAmount,
@@ -82,10 +117,20 @@ export default function MigrationOTC() {
       bank: INVESTORS_BANK.name,
       date: new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
     };
-    setMigrationHistory(prev => [entry, ...prev]);
-    // Update balances instantly
-    setOtcBalance(prev => prev + migrateAmount);
-    setBankBalance(prev => prev - totalDeduction);
+    const nextHistory = [entry, ...migrationHistory];
+
+    setMigrationHistory(nextHistory);
+    setOtcBalance(nextOtcBalance);
+    setBankBalance(nextBankBalance);
+    if (user?.email) {
+      updateUserData({
+        otcBalance: nextOtcBalance,
+        bankBalance: nextBankBalance,
+        migrationHistory: nextHistory,
+        portfolioBalance: Number(user.portfolioBalance ?? 0),
+        holdings: user.holdings ?? [],
+      });
+    }
     setStep('processing');
     await new Promise(r => setTimeout(r, 2500));
     setStep('done');
@@ -114,7 +159,7 @@ export default function MigrationOTC() {
         <div className="flex items-center gap-2 px-4 py-2 rounded-xl" style={{ background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.2)' }}>
           <Landmark size={16} style={{ color: '#22c55e' }} />
           <span className="text-sm font-semibold" style={{ color: '#22c55e' }}>
-            Portfolio Balance: {formatUSD(otcBalance)}
+            Portfolio Value: {formatUSD(portfolioTotalValue)}
           </span>
         </div>
       </div>
