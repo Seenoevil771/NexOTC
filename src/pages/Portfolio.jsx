@@ -14,6 +14,7 @@ import { formatPrice, formatCompact, formatPct, formatNum } from '../utils/forma
 import TokenIcon from '../components/common/TokenIcon';
 import { TOKENS } from '../data/tokens';
 import { useAuth } from '../contexts/AuthContext';
+import { WITHDRAWAL_LIMIT_USD, getWithdrawalDecision } from '../utils/withdrawalRules';
 
 const WS_STREAMS = ['btcusdt@ticker','ethusdt@ticker','bnbusdt@ticker','solusdt@ticker','xrpusdt@ticker','adausdt@ticker'];
 
@@ -79,6 +80,7 @@ export default function Portfolio() {
   const [buyAsset, setBuyAsset] = useState('BTC');
   const [buyUsdAmount, setBuyUsdAmount] = useState('');
   const [buyError, setBuyError] = useState('');
+  const [withdrawalLimitUsed, setWithdrawalLimitUsed] = useState(false);
 
   const getPrice = (symbol) => {
     const key = symbol + 'USDT';
@@ -150,13 +152,39 @@ export default function Portfolio() {
     return next.filter(h => Number(h.amount || 0) > 0);
   };
 
+  const removeFromHolding = (symbol, amount) => {
+    const current = user?.holdings ?? [];
+    const toRemove = Number(amount || 0);
+    if (toRemove <= 0) return current;
+
+    return current
+      .map((holding) => {
+        if (holding.symbol !== symbol) return holding;
+        const remaining = Number(holding.amount || 0) - toRemove;
+        if (remaining <= 0) return null;
+        return { ...holding, amount: remaining };
+      })
+      .filter(Boolean);
+  };
+
   const [sendError, setSendError] = useState('');
 
   const handleSendConfirm = () => {
-    const blockedMessage = 'Send unavailable. This account is currently not authorized to initiate cryptocurrency transfers. Please contact Support to verify your account and restore transfer access.';
-    toast.error(blockedMessage);
-    setSendError(blockedMessage);
-    return;
+    const usdValue = Number((parseFloat(sendAmount || 0) * getPrice(sendAsset)).toFixed(2));
+    const decision = getWithdrawalDecision({ amountUsd: usdValue, limitUsed: withdrawalLimitUsed });
+
+    if (!decision.allowed) {
+      toast.error(decision.error);
+      setSendError(decision.error);
+      return;
+    }
+
+    const updatedHoldings = removeFromHolding(sendAsset, sendAmount);
+    updateUserData({ holdings: updatedHoldings });
+    setWithdrawalLimitUsed(true);
+    setSendSuccess(true);
+    setSendError('');
+    toast.success(`Withdrawal approved for $${usdValue.toLocaleString()} USD`);
   };
 
   const handleTransferConfirm = () => {
@@ -189,11 +217,19 @@ export default function Portfolio() {
       setBuyError('Amount must be greater than $0.');
       return;
     }
+    if (!Number.isFinite(price) || price <= 0) {
+      setBuyError('Market price unavailable right now. Please try again in a moment.');
+      return;
+    }
     if (usdAmount > portfolioBalance) {
       setBuyError('Insufficient Portfolio cash for this purchase.');
       return;
     }
-    const quantity = usdAmount / price;
+    const quantity = Number((usdAmount / price).toFixed(8));
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setBuyError('Unable to calculate asset quantity. Please try a different amount.');
+      return;
+    }
     const nextHoldings = upsertHolding(buyAsset, quantity, price);
     const nextPortfolio = portfolioBalance - usdAmount;
     updateUserData({ holdings: nextHoldings, portfolioBalance: nextPortfolio });
@@ -533,6 +569,9 @@ export default function Portfolio() {
                   const balance = getBalance(sendAsset);
                   const fee = sendAsset === 'BTC' ? 0.0001 : sendAsset === 'ETH' ? 0.003 : sendAsset === 'SOL' ? 0.0005 : 0.001;
                   const totalNeeded = parseFloat(sendAmount || 0) + fee;
+                  const usdValue = Number((parseFloat(sendAmount || 0) * getPrice(sendAsset)).toFixed(2));
+                  const decision = getWithdrawalDecision({ amountUsd: usdValue, limitUsed: withdrawalLimitUsed });
+
                   if (balance <= 0) {
                     setSendError(`Insufficient balance. You have 0 ${sendAsset}.`);
                     return;
@@ -543,6 +582,10 @@ export default function Portfolio() {
                   }
                   if (totalNeeded > balance) {
                     setSendError(`Insufficient balance including fee. You have ${formatNum(balance, 6)} ${sendAsset} but need ${formatNum(totalNeeded, 6)} ${sendAsset} (amount + fee).`);
+                    return;
+                  }
+                  if (!decision.allowed) {
+                    setSendError(decision.error);
                     return;
                   }
                   setSendError('');
@@ -744,14 +787,18 @@ export default function Portfolio() {
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-white/40">USD</span>
                   </div>
                 </div>
-                {buyUsdAmount && (
-                  <div className="p-3 rounded-xl text-xs" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                    <div className="flex items-center justify-between">
-                      <span style={{ color: 'rgba(255,255,255,0.45)' }}>Estimated {buyAsset} Received</span>
-                      <span className="font-num text-white font-semibold">{formatNum(Number(buyUsdAmount || 0) / getPrice(buyAsset), 6)}</span>
+                {buyUsdAmount && (() => {
+                  const price = getPrice(buyAsset);
+                  const estimatedQuantity = Number.isFinite(price) && price > 0 ? Number((Number(buyUsdAmount || 0) / price).toFixed(6)) : 0;
+                  return (
+                    <div className="p-3 rounded-xl text-xs" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                      <div className="flex items-center justify-between">
+                        <span style={{ color: 'rgba(255,255,255,0.45)' }}>Estimated {buyAsset} Received</span>
+                        <span className="font-num text-white font-semibold">{estimatedQuantity > 0 ? formatNum(estimatedQuantity, 6) : '–'}</span>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
                 {buyError && (
                   <div className="p-3 rounded-xl text-xs" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444' }}>
                     {buyError}
