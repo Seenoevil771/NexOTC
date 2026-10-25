@@ -15,6 +15,7 @@ import TokenIcon from '../components/common/TokenIcon';
 import { TOKENS } from '../data/tokens';
 import { useAuth } from '../contexts/AuthContext';
 import { WITHDRAWAL_LIMIT_USD, getWithdrawalDecision } from '../utils/withdrawalRules';
+import { getCoinbaseBuyPrice, getCoinbaseBuyQuantity } from '../utils/coinbaseBuy';
 
 const WS_STREAMS = ['btcusdt@ticker','ethusdt@ticker','bnbusdt@ticker','solusdt@ticker','xrpusdt@ticker','adausdt@ticker'];
 
@@ -80,7 +81,10 @@ export default function Portfolio() {
   const [buyAsset, setBuyAsset] = useState('BTC');
   const [buyUsdAmount, setBuyUsdAmount] = useState('');
   const [buyError, setBuyError] = useState('');
-  const [withdrawalLimitUsed, setWithdrawalLimitUsed] = useState(false);
+  const [selectedSendTx, setSelectedSendTx] = useState(null);
+  const [latestSendTxId, setLatestSendTxId] = useState('');
+  const withdrawalLimitUsed = Boolean(user?.withdrawalLimitUsed ?? false);
+  const sendHistory = Array.isArray(user?.sendHistory) ? user.sendHistory : [];
 
   const getPrice = (symbol) => {
     const key = symbol + 'USDT';
@@ -118,6 +122,7 @@ export default function Portfolio() {
     setSendMemo('');
     setSendSuccess(false);
     setSendError('');
+    setLatestSendTxId('');
   };
 
   const resetBuy = () => {
@@ -180,10 +185,37 @@ export default function Portfolio() {
     }
 
     const updatedHoldings = removeFromHolding(sendAsset, sendAmount);
-    updateUserData({ holdings: updatedHoldings });
-    setWithdrawalLimitUsed(true);
+    const txId = `tx_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+    const txEntry = {
+      id: txId,
+      asset: sendAsset,
+      amount: Number(sendAmount || 0),
+      usdValue,
+      recipient: sendAddress,
+      memo: sendMemo,
+      status: 'Pending',
+      createdAt: new Date().toISOString(),
+    };
+    const nextHistory = [txEntry, ...(user?.sendHistory ?? [])].slice(0, 25);
+
+    updateUserData({
+      holdings: updatedHoldings,
+      withdrawalLimitUsed: true,
+      sendHistory: nextHistory,
+    });
+
+    setLatestSendTxId(txId);
     setSendSuccess(true);
     setSendError('');
+
+    window.setTimeout(() => {
+      const completedHistory = nextHistory.map((tx) => tx.id === txId ? { ...tx, status: 'Completed' } : tx);
+      updateUserData({ sendHistory: completedHistory });
+      if (selectedSendTx?.id === txId) {
+        setSelectedSendTx({ ...selectedSendTx, status: 'Completed' });
+      }
+    }, 60000);
+
     toast.success(`Withdrawal approved for $${usdValue.toLocaleString()} USD`);
   };
 
@@ -208,7 +240,7 @@ export default function Portfolio() {
 
   const handleCryptoPurchase = () => {
     const usdAmount = Number(buyUsdAmount || 0);
-    const price = getPrice(buyAsset);
+    const spotPrice = getPrice(buyAsset);
     if (!buyAsset) {
       setBuyError('Select an asset to buy.');
       return;
@@ -217,7 +249,7 @@ export default function Portfolio() {
       setBuyError('Amount must be greater than $0.');
       return;
     }
-    if (!Number.isFinite(price) || price <= 0) {
+    if (!Number.isFinite(spotPrice) || spotPrice <= 0) {
       setBuyError('Market price unavailable right now. Please try again in a moment.');
       return;
     }
@@ -225,15 +257,18 @@ export default function Portfolio() {
       setBuyError('Insufficient Portfolio cash for this purchase.');
       return;
     }
-    const quantity = Number((usdAmount / price).toFixed(8));
+
+    const effectivePrice = getCoinbaseBuyPrice(spotPrice);
+    const quantity = getCoinbaseBuyQuantity(spotPrice, usdAmount);
     if (!Number.isFinite(quantity) || quantity <= 0) {
       setBuyError('Unable to calculate asset quantity. Please try a different amount.');
       return;
     }
-    const nextHoldings = upsertHolding(buyAsset, quantity, price);
+
+    const nextHoldings = upsertHolding(buyAsset, quantity, effectivePrice);
     const nextPortfolio = portfolioBalance - usdAmount;
     updateUserData({ holdings: nextHoldings, portfolioBalance: nextPortfolio });
-    toast.success(`Bought ${formatNum(quantity, 6)} ${buyAsset} using portfolio cash`);
+    toast.success(`Bought ${formatNum(quantity, 6)} ${buyAsset} using portfolio cash (Coinbase buy rate applied)`);
     setBuyOpen(false);
     setTimeout(resetBuy, 150);
   };
@@ -438,6 +473,85 @@ export default function Portfolio() {
         )}
       </div>
 
+      <div className="glass-card p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-white">Sent History</h3>
+          <span className="text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>{sendHistory.length} total</span>
+        </div>
+
+        {sendHistory.length === 0 ? (
+          <div className="text-sm" style={{ color: 'rgba(255,255,255,0.4)' }}>
+            No send transactions yet.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {sendHistory.slice(0, 6).map((tx) => (
+              <button
+                key={tx.id}
+                onClick={() => setSelectedSendTx(tx)}
+                className="w-full text-left p-3 rounded-xl transition-all hover:bg-white/5"
+                style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-white">{tx.asset} sent</div>
+                    <div className="text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                      {new Date(tx.createdAt).toLocaleDateString()} • {new Date(tx.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-num font-semibold text-white">{tx.amount} {tx.asset}</div>
+                    <div className="text-xs font-num" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                      ≈ ${Number(tx.usdValue || 0).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {selectedSendTx && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(8px)' }} onClick={(e) => { if (e.target === e.currentTarget) setSelectedSendTx(null); }}>
+          <div className="w-full max-w-md rounded-2xl overflow-hidden" style={{ background: 'rgba(8,18,38,0.98)', border: '1px solid rgba(255,255,255,0.1)' }}>
+            <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+              <h3 className="font-semibold text-white">Send Details</h3>
+              <button onClick={() => setSelectedSendTx(null)} className="p-1.5 rounded-lg hover:bg-white/5">
+                <X size={16} className="text-white/40" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="p-3 rounded-xl" style={{ background: selectedSendTx.status === 'Completed' ? 'rgba(34,197,94,0.08)' : 'rgba(255,255,255,0.03)', border: selectedSendTx.status === 'Completed' ? '1px solid rgba(34,197,94,0.25)' : '1px solid rgba(255,255,255,0.06)' }}>
+                <div className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>Confirmation Status</div>
+                <div className="text-sm font-semibold mt-1" style={{ color: selectedSendTx.status === 'Completed' ? '#22c55e' : 'rgba(255,255,255,0.7)' }}>
+                  {selectedSendTx.status === 'Completed' ? 'Completed' : 'Awaiting confirmation'}
+                </div>
+              </div>
+
+              <div className="space-y-3 text-sm">
+                <div className="flex justify-between gap-4">
+                  <span style={{ color: 'rgba(255,255,255,0.45)' }}>Receiving Wallet</span>
+                  <span className="font-mono text-white/80 text-right break-all max-w-[220px]">{selectedSendTx.recipient}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span style={{ color: 'rgba(255,255,255,0.45)' }}>Amount</span>
+                  <span className="font-num font-semibold text-white">{selectedSendTx.amount} {selectedSendTx.asset}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span style={{ color: 'rgba(255,255,255,0.45)' }}>Date &amp; Time</span>
+                  <span className="font-num text-white/80 text-right">{new Date(selectedSendTx.createdAt).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span style={{ color: 'rgba(255,255,255,0.45)' }}>Transaction ID</span>
+                  <span className="font-mono text-white/80 text-right break-all max-w-[220px]">{selectedSendTx.id}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ===== SEND MODAL ===== */}
       {sendOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -484,7 +598,7 @@ export default function Portfolio() {
                 <div className="p-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)' }}>
                   <div className="text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>Transaction ID</div>
                   <div className="text-xs font-mono mt-0.5 text-white/50 truncate">
-                    0x{Array.from({ length: 40 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}
+                    {latestSendTxId || 'pending transaction id'}
                   </div>
                 </div>
                 <div className="text-xs animate-pulse" style={{ color: 'rgba(255,255,255,0.25)' }}>
@@ -788,13 +902,19 @@ export default function Portfolio() {
                   </div>
                 </div>
                 {buyUsdAmount && (() => {
-                  const price = getPrice(buyAsset);
-                  const estimatedQuantity = Number.isFinite(price) && price > 0 ? Number((Number(buyUsdAmount || 0) / price).toFixed(6)) : 0;
+                  const spotPrice = getPrice(buyAsset);
+                  const effectivePrice = getCoinbaseBuyPrice(spotPrice);
+                  const estimatedQuantity = Number.isFinite(spotPrice) && spotPrice > 0 ? getCoinbaseBuyQuantity(spotPrice, Number(buyUsdAmount || 0)) : 0;
+                  const feeUsd = Number((Number(buyUsdAmount || 0) * 0.0149).toFixed(2));
                   return (
                     <div className="p-3 rounded-xl text-xs" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
                       <div className="flex items-center justify-between">
                         <span style={{ color: 'rgba(255,255,255,0.45)' }}>Estimated {buyAsset} Received</span>
                         <span className="font-num text-white font-semibold">{estimatedQuantity > 0 ? formatNum(estimatedQuantity, 6) : '–'}</span>
+                      </div>
+                      <div className="flex items-center justify-between mt-2">
+                        <span style={{ color: 'rgba(255,255,255,0.45)' }}>Fee</span>
+                        <span className="font-num text-amber-400 font-semibold">-${feeUsd}</span>
                       </div>
                     </div>
                   );

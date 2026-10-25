@@ -411,54 +411,6 @@ export default function AuthPage() {
           )}
         </div>
 
-        {/* Features */}
-        <div className="grid grid-cols-3 gap-3 mt-6">
-          {[
-            {
-              icon: CheckCircle2,
-              label: 'Secure',
-              sub: '256-bit encryption',
-              color: '#22c55e',
-            },
-            {
-              icon: CheckCircle2,
-              label: 'Fast',
-              sub: 'Instant settlement',
-              color: '#3b82f6',
-            },
-            {
-              icon: CheckCircle2,
-              label: 'Insured',
-              sub: 'FDIC protected',
-              color: '#eab308',
-            },
-          ].map(({ icon: Icon, label, sub, color }) => (
-            <div
-              key={label}
-              className="text-center p-3 rounded-xl"
-              style={{
-                background: 'rgba(255,255,255,0.03)',
-              }}
-            >
-              <Icon
-                size={14}
-                className="mx-auto mb-1"
-                style={{ color }}
-              />
-
-              <div className="text-xs font-semibold text-white">
-                {label}
-              </div>
-
-              <div
-                className="text-[10px]"
-                style={{ color: 'rgba(255,255,255,0.3)' }}
-              >
-                {sub}
-              </div>
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );

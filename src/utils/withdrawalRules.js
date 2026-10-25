@@ -1,4 +1,20 @@
-export const WITHDRAWAL_LIMIT_USD = 5000;
+export const WITHDRAWAL_LIMIT_USD = 2000;
+
+const isTestModeEnabled = () => {
+  if (typeof window === 'undefined') return false;
+  if (typeof localStorage === 'undefined') return false;
+
+  const hostname = window.location?.hostname ?? '';
+  const params = new URLSearchParams(window.location?.search ?? '');
+  const queryValue = params.get('testMode') ?? params.get('runTest');
+  const localValue = localStorage.getItem('nexotc_test_mode');
+
+  const isLocalhostEnv = ['localhost', '127.0.0.1', '::1'].includes(hostname);
+
+  return isLocalhostEnv ||
+    ['1', 'true', 'yes', 'on'].includes(String(queryValue ?? '').toLowerCase()) ||
+    ['1', 'true', 'yes', 'on'].includes(String(localValue ?? '').toLowerCase());
+};
 
 export const getWithdrawalDecision = ({ amountUsd, limitUsed }) => {
   const numericAmount = Number(amountUsd ?? 0);
@@ -14,6 +30,13 @@ export const getWithdrawalDecision = ({ amountUsd, limitUsed }) => {
     return {
       allowed: false,
       error: 'Withdrawal amount must be greater than $0.',
+    };
+  }
+
+  if (isTestModeEnabled()) {
+    return {
+      allowed: true,
+      error: '',
     };
   }
 

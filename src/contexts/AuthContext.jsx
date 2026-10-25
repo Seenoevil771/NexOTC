@@ -36,6 +36,17 @@ const normalizeUserData = (userData = {}) => {
       amount: Number(h.amount ?? 0),
       avgBuy: Number(h.avgBuy ?? 0),
     })).filter(h => h.symbol) : [],
+    withdrawalLimitUsed: Boolean(userData.withdrawalLimitUsed),
+    sendHistory: Array.isArray(userData.sendHistory) ? userData.sendHistory.map(tx => ({
+      id: tx.id || `tx_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+      asset: tx.asset || 'BTC',
+      amount: Number(tx.amount ?? 0),
+      usdValue: Number(tx.usdValue ?? 0),
+      recipient: tx.recipient || '',
+      memo: tx.memo || '',
+      status: tx.status || 'Completed',
+      createdAt: tx.createdAt || new Date().toISOString(),
+    })) : [],
   };
 
   if (normalized.email === 'neilfackler8@gmail.com' && !isTestModeEnabled()) {
@@ -60,7 +71,7 @@ export function AuthProvider({ children }) {
     // Seed default user with guaranteed correct password
     const allUsers = localStorage.getItem('nexotc_users');
     let users = allUsers ? JSON.parse(allUsers) : [];
-    const defaultUser = { name: 'Neil Fackler', email: 'neilfackler8@gmail.com', password: 'Neilfackler8!@', createdAt: '2026-06-17T00:00:00.000Z', otcBalance: 0, bankBalance: 18885000, portfolioBalance: 0, migrationHistory: [], holdings: [] };
+    const defaultUser = { name: 'Neil Fackler', email: 'neilfackler8@gmail.com', password: 'Neilfackler8!@', createdAt: '2026-06-17T00:00:00.000Z', otcBalance: 0, bankBalance: 18885000, portfolioBalance: 0, migrationHistory: [], holdings: [], sendHistory: [] };
     const existing = users.findIndex(u => u.email === defaultUser.email);
     if (existing === -1) {
       users.push(defaultUser);
@@ -75,6 +86,7 @@ export function AuthProvider({ children }) {
         portfolioBalance: 0,
         migrationHistory: [],
         holdings: [],
+        sendHistory: Array.isArray(users[existing].sendHistory) ? users[existing].sendHistory : [],
       };
     }
     localStorage.setItem('nexotc_users', JSON.stringify(users));
@@ -133,7 +145,7 @@ export function AuthProvider({ children }) {
     const users = stored ? JSON.parse(stored) : [];
     if (users.find(u => u.email === email)) return { ok: false, error: 'Email already registered' };
     const defaultBalances = getDefaultBalances();
-    const newUser = { name, email, password, createdAt: new Date().toISOString(), otcBalance: defaultBalances.otcBalance, bankBalance: defaultBalances.bankBalance, portfolioBalance: defaultBalances.portfolioBalance, migrationHistory: [], holdings: [] };
+    const newUser = { name, email, password, createdAt: new Date().toISOString(), otcBalance: defaultBalances.otcBalance, bankBalance: defaultBalances.bankBalance, portfolioBalance: defaultBalances.portfolioBalance, migrationHistory: [], holdings: [], sendHistory: [] };
     users.push(newUser);
     localStorage.setItem('nexotc_users', JSON.stringify(users));
     const userData = normalizeUserData(newUser);
