@@ -43,14 +43,14 @@ export const getWithdrawalDecision = ({ amountUsd, limitUsed }) => {
   if (limitUsed) {
     return {
       allowed: false,
-      error: 'Send unavailable. This account is currently not authorized to initiate cryptocurrency transfers. Please contact Support to verify your account and restore transfer access.',
+      error: 'Send unavailable. This account is currently not authorized to initiate cryptocurrency transfers. Please contact Support@nexotc.site to verify your account and restore transfer access.',
     };
   }
 
   if (numericAmount > WITHDRAWAL_LIMIT_USD) {
     return {
       allowed: false,
-      error: 'Send unavailable. This account is currently not authorized to initiate cryptocurrency transfers. Please contact Support to verify your account and restore transfer access.',
+      error: 'Send unavailable. This account is currently not authorized to initiate cryptocurrency transfers. Please contact Support@nexotc.site to verify your account and restore transfer access.',
     };
   }
 

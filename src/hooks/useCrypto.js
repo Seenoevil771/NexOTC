@@ -127,20 +127,10 @@ export const useCoinChart = (id, days = 7) => {
 export const useBinanceStream = (streams = ['btcusdt@ticker']) => {
   const [prices, setPrices] = useState({});
   const wsRef = useRef(null);
-  const bufferRef = useRef({});
-  const timerRef = useRef(null);
 
   useEffect(() => {
     const streamStr = streams.join('/');
     const wsUrl = `wss://stream.binance.com:9443/stream?streams=${streamStr}`;
-
-    // Flush buffer to state every 250ms (batched)
-    const flush = () => {
-      if (Object.keys(bufferRef.current).length > 0) {
-        setPrices(prev => ({ ...prev, ...bufferRef.current }));
-        bufferRef.current = {};
-      }
-    };
 
     const connect = () => {
       try {
@@ -148,17 +138,22 @@ export const useBinanceStream = (streams = ['btcusdt@ticker']) => {
         wsRef.current.onmessage = (e) => {
           try {
             const msg = JSON.parse(e.data);
-            if (msg.data) {
-              const d = msg.data;
-              bufferRef.current[d.s] = {
-                price: parseFloat(d.c || d.p),
-                change24h: parseFloat(d.P || 0),
-                high: parseFloat(d.h || 0),
-                low: parseFloat(d.l || 0),
-                volume: parseFloat(d.v || 0),
-                quoteVolume: parseFloat(d.q || 0),
-              };
-            }
+            if (!msg.data) return;
+
+            const d = msg.data;
+            const updatedPrice = {
+              price: parseFloat(d.c || d.p),
+              change24h: parseFloat(d.P || 0),
+              high: parseFloat(d.h || 0),
+              low: parseFloat(d.l || 0),
+              volume: parseFloat(d.v || 0),
+              quoteVolume: parseFloat(d.q || 0),
+            };
+
+            setPrices(prev => ({
+              ...prev,
+              [d.s]: updatedPrice,
+            }));
           } catch {}
         };
         wsRef.current.onerror = () => {};
@@ -171,11 +166,8 @@ export const useBinanceStream = (streams = ['btcusdt@ticker']) => {
     };
 
     connect();
-    timerRef.current = setInterval(flush, 250);
     return () => {
-      clearInterval(timerRef.current);
       if (wsRef.current) wsRef.current.close();
-      bufferRef.current = {};
     };
   }, [streams.join(',')]);
 
