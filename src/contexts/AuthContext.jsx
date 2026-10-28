@@ -1,96 +1,39 @@
 import { createContext, useContext, useState, useEffect } from 'react';
+import {
+  TEST_MODE_KEY,
+  DEFAULT_USER_EMAIL,
+  buildDefaultUserSeed,
+  normalizeUserData,
+  isTestModeEnabled,
+  getDefaultBalances,
+} from '../utils/authState';
 
 const AuthContext = createContext(null);
-const TEST_MODE_KEY = 'nexotc_test_mode';
-
-const isTestModeEnabled = () => {
-  if (typeof window === 'undefined') return false;
-  const params = new URLSearchParams(window.location.search);
-  const queryValue = params.get('testMode') ?? params.get('runTest');
-  const localValue = localStorage.getItem(TEST_MODE_KEY);
-  return ['1', 'true', 'yes', 'on'].includes(String(queryValue ?? '').toLowerCase()) ||
-    ['1', 'true', 'yes', 'on'].includes(String(localValue ?? '').toLowerCase());
-};
-
-const getDefaultBalances = () => {
-  const testMode = isTestModeEnabled();
-  return {
-    otcBalance: 0,
-    bankBalance: testMode ? 18885000 : 18885000,
-    portfolioBalance: 0,
-  };
-};
-
-const normalizeUserData = (userData = {}) => {
-  const defaultBalances = getDefaultBalances();
-  const normalized = {
-    email: userData.email || '',
-    name: userData.name || '',
-    createdAt: userData.createdAt || new Date().toISOString(),
-    otcBalance: Number(userData.otcBalance ?? defaultBalances.otcBalance),
-    bankBalance: Number(userData.bankBalance ?? defaultBalances.bankBalance),
-    portfolioBalance: Number(userData.portfolioBalance ?? defaultBalances.portfolioBalance),
-    migrationHistory: Array.isArray(userData.migrationHistory) ? userData.migrationHistory : [],
-    holdings: Array.isArray(userData.holdings) ? userData.holdings.map(h => ({
-      symbol: h.symbol,
-      amount: Number(h.amount ?? 0),
-      avgBuy: Number(h.avgBuy ?? 0),
-    })).filter(h => h.symbol) : [],
-    withdrawalLimitUsed: Boolean(userData.withdrawalLimitUsed),
-    sendHistory: Array.isArray(userData.sendHistory) ? userData.sendHistory.map(tx => ({
-      id: tx.id || `tx_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
-      asset: tx.asset || 'BTC',
-      amount: Number(tx.amount ?? 0),
-      usdValue: Number(tx.usdValue ?? 0),
-      recipient: tx.recipient || '',
-      memo: tx.memo || '',
-      status: tx.status || 'Completed',
-      createdAt: tx.createdAt || new Date().toISOString(),
-    })) : [],
-  };
-
-  if (normalized.email === 'neilfackler8@gmail.com' && !isTestModeEnabled()) {
-    const hasRealActivity = normalized.otcBalance > 0 || normalized.portfolioBalance > 0 || normalized.holdings.length > 0 || normalized.migrationHistory.length > 0;
-    if (!hasRealActivity) {
-      normalized.otcBalance = 0;
-      normalized.bankBalance = 18885000;
-      normalized.portfolioBalance = 0;
-      normalized.holdings = [];
-      normalized.migrationHistory = [];
-    }
-  }
-
-  return normalized;
-};
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Seed default user with guaranteed correct password
     const allUsers = localStorage.getItem('nexotc_users');
     let users = allUsers ? JSON.parse(allUsers) : [];
-    const defaultUser = { name: 'Neil Fackler', email: 'neilfackler8@gmail.com', password: 'Neilfackler8!@', createdAt: '2026-06-17T00:00:00.000Z', otcBalance: 0, bankBalance: 18885000, portfolioBalance: 0, migrationHistory: [], holdings: [], sendHistory: [] };
+    const defaultUser = buildDefaultUserSeed();
     const existing = users.findIndex(u => u.email === defaultUser.email);
+
     if (existing === -1) {
       users.push(defaultUser);
     } else {
-      // Ensure the seeded login user is reset and saved with zero OTC/portfolio balances.
       users[existing] = {
+        ...defaultUser,
         ...users[existing],
         password: defaultUser.password,
         name: defaultUser.name,
-        otcBalance: 0,
-        bankBalance: 18885000,
-        portfolioBalance: 0,
-        migrationHistory: [],
-        holdings: [],
-        sendHistory: Array.isArray(users[existing].sendHistory) ? users[existing].sendHistory : [],
+        email: defaultUser.email,
+        createdAt: users[existing].createdAt || defaultUser.createdAt,
       };
     }
+
     localStorage.setItem('nexotc_users', JSON.stringify(users));
-    // Remove unwanted accounts
     users = users.filter(u => u.email !== '1234@gmail.com');
     localStorage.setItem('nexotc_users', JSON.stringify(users));
 
@@ -134,6 +77,7 @@ export function AuthProvider({ children }) {
     const users = stored ? JSON.parse(stored) : [];
     const found = users.find(u => u.email === email && u.password === password);
     if (!found) return { ok: false, error: 'Invalid email or password' };
+
     const userData = normalizeUserData(found);
     setUser(userData);
     localStorage.setItem('nexotc_user', JSON.stringify(userData));
@@ -174,14 +118,17 @@ export function AuthProvider({ children }) {
 
   const updateUserData = (updates = {}) => {
     if (!user || !user.email) return;
+
     const stored = localStorage.getItem('nexotc_users');
     const users = stored ? JSON.parse(stored) : [];
     const idx = users.findIndex(u => u.email === user.email);
     const merged = normalizeUserData({ ...user, ...updates });
+
     if (idx !== -1) {
       users[idx] = { ...users[idx], ...merged };
       localStorage.setItem('nexotc_users', JSON.stringify(users));
     }
+
     setUser(merged);
     localStorage.setItem('nexotc_user', JSON.stringify(merged));
   };
