@@ -1,11 +1,10 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import {
   TEST_MODE_KEY,
-  DEFAULT_USER_EMAIL,
-  buildDefaultUserSeed,
   normalizeUserData,
   isTestModeEnabled,
   getDefaultBalances,
+  preserveExistingUserSeed,
 } from '../utils/authState';
 
 const AuthContext = createContext(null);
@@ -17,23 +16,7 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     const allUsers = localStorage.getItem('nexotc_users');
     let users = allUsers ? JSON.parse(allUsers) : [];
-    const defaultUser = buildDefaultUserSeed();
-    const existing = users.findIndex(u => u.email === defaultUser.email);
-
-    if (existing === -1) {
-      users.push(defaultUser);
-    } else {
-      users[existing] = {
-        ...defaultUser,
-        ...users[existing],
-        password: defaultUser.password,
-        name: defaultUser.name,
-        email: defaultUser.email,
-        createdAt: users[existing].createdAt || defaultUser.createdAt,
-      };
-    }
-
-    localStorage.setItem('nexotc_users', JSON.stringify(users));
+    users = preserveExistingUserSeed(users);
     users = users.filter(u => u.email !== '1234@gmail.com');
     localStorage.setItem('nexotc_users', JSON.stringify(users));
 
@@ -117,15 +100,19 @@ export function AuthProvider({ children }) {
   }
 
   const updateUserData = (updates = {}) => {
-    if (!user || !user.email) return;
+    const activeUser = user || JSON.parse(localStorage.getItem('nexotc_user') || 'null');
+    if (!activeUser || !activeUser.email) return;
 
     const stored = localStorage.getItem('nexotc_users');
     const users = stored ? JSON.parse(stored) : [];
-    const idx = users.findIndex(u => u.email === user.email);
-    const merged = normalizeUserData({ ...user, ...updates });
+    const idx = users.findIndex(u => u.email === activeUser.email);
+    const merged = normalizeUserData({ ...activeUser, ...updates });
 
     if (idx !== -1) {
       users[idx] = { ...users[idx], ...merged };
+      localStorage.setItem('nexotc_users', JSON.stringify(users));
+    } else {
+      users.push({ ...merged, password: activeUser.password || '' });
       localStorage.setItem('nexotc_users', JSON.stringify(users));
     }
 

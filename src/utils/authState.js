@@ -33,6 +33,34 @@ export const buildDefaultUserSeed = () => ({
   sendHistory: [],
 });
 
+export const preserveExistingUserSeed = (users = []) => {
+  const defaultUser = buildDefaultUserSeed();
+  const idx = users.findIndex(u => u.email === defaultUser.email);
+
+  if (idx === -1) {
+    users.push(defaultUser);
+    return users;
+  }
+
+  const existing = users[idx] ?? {};
+  users[idx] = {
+    ...defaultUser,
+    ...existing,
+    email: defaultUser.email,
+    password: existing.password || defaultUser.password,
+    name: existing.name || defaultUser.name,
+    createdAt: existing.createdAt || defaultUser.createdAt,
+    otcBalance: Number(existing.otcBalance ?? defaultUser.otcBalance),
+    bankBalance: Number(existing.bankBalance ?? defaultUser.bankBalance),
+    portfolioBalance: Number(existing.portfolioBalance ?? defaultUser.portfolioBalance),
+    migrationHistory: Array.isArray(existing.migrationHistory) ? existing.migrationHistory : [],
+    holdings: Array.isArray(existing.holdings) ? existing.holdings : [],
+    sendHistory: Array.isArray(existing.sendHistory) ? existing.sendHistory : [],
+  };
+
+  return users;
+};
+
 export const normalizeUserData = (userData = {}) => {
   const defaultBalances = getDefaultBalances();
 
